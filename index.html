@@ -580,6 +580,29 @@ const B=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0)),T=b=>new TextDecoder().de
 function norm(p){let o=[];String(p||"").replace(/\\/g,"/").split("/").forEach(x=>{if(!x||x===".")return;if(x==="..")o.pop();else o.push(x)});return o.join("/")}
 function dir(p){let a=norm(p).split("/");a.pop();return a.join("/")}
 function resolve(base,r){if(!r)return"";if(/^(https?:|mailto:|tel:|data:|blob:|javascript:|about:|#)/i.test(r))return r;let c=r.split("#")[0].split("?")[0];return norm((c.startsWith("/")?"":dir(base)+"/")+c.replace(/^\/+/,""))}
+function routeIntent(base,raw){
+  if(!raw||/^(mailto:|tel:|data:|blob:|javascript:|about:|#)/i.test(raw))return{kind:"native",url:raw};
+  if(/^https?:/i.test(raw))return{kind:"external",url:raw};
+  const clean=raw.split("#")[0].split("?")[0], suffix=raw.slice(clean.length);
+  const baseDir=dir(base||"index.html"), stack=baseDir?baseDir.split("/").filter(Boolean):[];
+  let escaped=false;
+  for(const part of clean.replace(/\\/g,"/").split("/")){
+    if(!part||part===".")continue;
+    if(part===".."){if(stack.length)stack.pop();else escaped=true}
+    else stack.push(part);
+  }
+  const virtual=candidate(stack.join("/"));
+  if(virtual)return{kind:"virtual",path:virtual};
+  if(escaped){
+    // Relative navigation above the embedded Pre-Algebra root means either:
+    // (a) return to the visible course portal when it resolves to the course root, or
+    // (b) continue to a real Khaemenes High path outside this embedded course.
+    if(stack.length===0||clean.match(/^(?:\.\.\/)+$/))return{kind:"root"};
+    const productionBase="https://vervenveda.github.io/Khaemenes_High.github.io/courses/mathematics/pre-algebra/";
+    try{return{kind:"external",url:new URL(raw,productionBase).href}}catch{}
+  }
+  return{kind:"native",url:raw};
+}
 function candidate(p){
  p=norm(p);
  if(!CLOUD)return null;
@@ -600,7 +623,7 @@ window.__KHAE_CLOUD_HAS=p=>!!candidate(p);
 window.__KHAE_CLOUD_FETCH=async(i,n)=>{let u=typeof i==="string"?i:i?.url||"";if(/^(https?:|data:|blob:)/i.test(u))return nativeFetch(i,n);await boot();let p=candidate(resolve(currentVirtual||"index.html",u))||candidate(u);if(!p)return nativeFetch(i,n);return new Response(bytes(p),{status:200,headers:{"Content-Type":mime(p)}})};
 window.fetch=(i,n)=>window.__KHAE_CLOUD_FETCH(i,n);
 
-function bridge(path){return `<script>(()=>{const BASE=${JSON.stringify(path)};const N=p=>{let o=[];String(p||"").replace(/\\\\/g,"/").split("/").forEach(x=>{if(!x||x===".")return;if(x==="..")o.pop();else o.push(x)});return o.join("/")};const D=p=>{let a=N(p).split("/");a.pop();return a.join("/")};const R=r=>{if(!r||/^(https?:|mailto:|tel:|data:|blob:|javascript:|about:|#)/i.test(r))return r;return N(D(BASE)+"/"+r.split("#")[0].split("?")[0])};window.fetch=(i,n)=>parent.__KHAE_CLOUD_FETCH(typeof i==="string"?R(i):i,n);document.addEventListener("click",e=>{let a=e.target.closest("a[href]");if(!a)return;let p=R(a.getAttribute("href"));if(parent.__KHAE_CLOUD_HAS(p)){e.preventDefault();parent.postMessage({type:"khae-cloud-open",path:p},"*")}},true);const O=window.open;window.open=(u,t,f)=>{let p=R(u);if(parent.__KHAE_CLOUD_HAS(p)){parent.postMessage({type:"khae-cloud-open",path:p},"*");return null}return O.call(window,u,t,f)}})();<\/script>`}
+function bridge(path){return `<script>(()=>{const BASE=${JSON.stringify(path)};const N=p=>{let o=[];String(p||"").replace(/\\\\/g,"/").split("/").forEach(x=>{if(!x||x===".")return;if(x==="..")o.pop();else o.push(x)});return o.join("/")};const D=p=>{let a=N(p).split("/");a.pop();return a.join("/")};const R=r=>{if(!r||/^(https?:|mailto:|tel:|data:|blob:|javascript:|about:|#)/i.test(r))return r;return N(D(BASE)+"/"+r.split("#")[0].split("?")[0])};window.fetch=(i,n)=>parent.__KHAE_CLOUD_FETCH(typeof i==="string"?R(i):i,n);document.addEventListener("click",e=>{let a=e.target.closest("a[href]");if(!a)return;let raw=a.getAttribute("href");if(!raw||/^(mailto:|tel:|data:|blob:|javascript:|about:|#)/i.test(raw))return;e.preventDefault();parent.postMessage({type:"khae-cloud-route",base:BASE,raw},"*")},true);const O=window.open;window.open=(u,t,f)=>{if(u&&!/^(mailto:|tel:|data:|blob:|javascript:|about:|#)/i.test(u)){parent.postMessage({type:"khae-cloud-route",base:BASE,raw:u,target:t||"_self"},"*");return null}return O.call(window,u,t,f)}})();<\/script>`}
 function rewrite(path,s){
  let d=new DOMParser().parseFromString(s,"text/html");
  d.querySelectorAll("[src]").forEach(e=>{let p=candidate(resolve(path,e.getAttribute("src")));let u=p&&blob(p);if(u)e.setAttribute("src",u)});
@@ -613,9 +636,29 @@ async function openPath(p,push=true){await boot();p=candidate(p)||candidate(reso
 function closePath(push=true){if(!overlay||overlay.hidden)return;overlay.hidden=true;currentVirtual=null;document.body.style.overflow="";if(push)history.pushState({khae:null},"",location.pathname+location.search)}
 window.__KHAE_OPEN_COURSE_PATH=openPath;
 
-document.addEventListener("click",async e=>{let a=e.target.closest?.("a[href]");if(!a)return;await boot();let raw=a.getAttribute("href");let p=candidate(resolve("index.html",raw))||candidate(raw);if(p&&/\.html?$/i.test(p)){e.preventDefault();openPath(p)}},true);
-window.open=function(u,t,f){let p=CLOUD&&(candidate(resolve(currentVirtual||"index.html",u))||candidate(u));if(p&&/\.html?$/i.test(p)){openPath(p);return null}return nativeOpen(u,t,f)};
-addEventListener("message",e=>{if(e.data?.type==="khae-cloud-open")openPath(e.data.path)});
+document.addEventListener("click",async e=>{
+ let a=e.target.closest?.("a[href]");if(!a)return;await boot();
+ let r=routeIntent(currentVirtual||"index.html",a.getAttribute("href"));
+ if(r.kind==="virtual"&&/\.html?$/i.test(r.path)){e.preventDefault();openPath(r.path);return}
+ if(r.kind==="root"){e.preventDefault();if(currentVirtual){closePath()}else{scrollTo({top:0,behavior:"smooth"})}return}
+ if(r.kind==="external"&&r.url&&!/^https?:\/\/artist1970\.github\.io\/dummy\.github\.io/i.test(r.url)){a.href=r.url}
+},true);
+window.open=function(u,t,f){
+ let r=CLOUD?routeIntent(currentVirtual||"index.html",u):{kind:"native",url:u};
+ if(r.kind==="virtual"&&/\.html?$/i.test(r.path)){openPath(r.path);return null}
+ if(r.kind==="root"){closePath();return window}
+ if(r.kind==="external")return nativeOpen(r.url,t,f);
+ return nativeOpen(u,t,f)
+};
+addEventListener("message",async e=>{
+ if(e.data?.type==="khae-cloud-open"){openPath(e.data.path);return}
+ if(e.data?.type==="khae-cloud-route"){
+   await boot();let r=routeIntent(e.data.base||currentVirtual||"index.html",e.data.raw);
+   if(r.kind==="virtual"){openPath(r.path);return}
+   if(r.kind==="root"){closePath();return}
+   if(r.kind==="external"){if(e.data.target==="_blank")nativeOpen(r.url,"_blank");else location.href=r.url;return}
+ }
+});
 addEventListener("popstate",e=>{e.state?.khae?openPath(e.state.khae,false):closePath(false)});
 addEventListener("keydown",e=>{if(e.key==="Escape"&&overlay&&!overlay.hidden)history.back()});
 boot().catch(e=>console.error("Hidden Khaemenes course runtime:",e));
